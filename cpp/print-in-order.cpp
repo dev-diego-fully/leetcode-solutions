@@ -9,58 +9,67 @@ using std::function;
 using std::mutex;
 using std::unique_lock;
 
-/// @class Foo
-/// @brief A class that ensures three methods are executed in a specific order: first(), then second(), then third().
+/// @brief A class that ensures three methods are executed in a specific order:
+/// first(), then second(), then third().
 ///
-/// This class uses `std::condition_variable` and `std::mutex` to synchronize
-/// the execution of its public methods, guaranteeing that the sequence `first` -> `second` -> `third`
-/// is strictly followed, even if the methods are called from different threads.
+/// This implementation uses a single condition variable and a shared turn counter
+/// to manage the execution order of the three methods. A mutex protects the
+/// turn counter, while the condition variable allows threads to wait for their
+/// specific turn before proceeding.
 class Foo {
  public:
-  /// @brief Constructs a new Foo object.
-  Foo() {}
+  /// @brief Constructs a new Foo object and initializes the turn counter.
+  Foo() {
+    this->turn = 0;
+  }
 
   /// @brief Executes the first step of the sequence.
   ///
-  /// This method performs its action and then signals to unblock the thread waiting on `second()`.
+  /// This method waits until `turn` is 0, executes its action, increments the
+  /// turn counter, and notifies all waiting threads.
   /// @param printFirst A callable object that performs the action for the first step.
   void first(function<void()> printFirst) {
+    unique_lock lock(this->turnMtx);
+    this->turnCV.wait(lock, [this]() { return this->turn == 0; });
+
     printFirst();
-    this->hasFirstEnded.notify_one();
+
+    this->turn += 1;
+    this->turnCV.notify_all();
   }
 
   /// @brief Executes the second step of the sequence.
   ///
-  /// This method waits for the `first()` method to finish before executing its action.
-  /// After its action is complete, it signals to unblock the thread waiting on `third()`.
+  /// This method waits until `turn` is 1, executes its action, increments the
+  /// turn counter, and notifies all waiting threads.
   /// @param printSecond A callable object that performs the action for the second step.
   void second(function<void()> printSecond) {
-    unique_lock<mutex> lock(this->mtxHasFirstEnded);
-    this->hasFirstEnded.wait(lock);
+    unique_lock<mutex> lock(this->turnMtx);
+    this->turnCV.wait(lock, [this]() { return this->turn == 1; });
 
     printSecond();
 
-    this->hasSecondedEnded.notify_one();
+    this->turn += 1;
+    this->turnCV.notify_all();
   }
 
   /// @brief Executes the third and final step of the sequence.
   ///
-  /// This method waits for the `second()` method to finish before executing its action.
+  /// This method waits until `turn` is 2, executes its action, and then
+  /// concludes the sequence.
   /// @param printThird A callable object that performs the action for the third step.
   void third(function<void()> printThird) {
-    unique_lock<mutex> lock(this->mtxHasSecondedEnded);
-    this->hasSecondedEnded.wait(lock);
+    unique_lock<mutex> lock(this->turnMtx);
+    this->turnCV.wait(lock, [this]() { return this->turn == 2; });
 
     printThird();
   }
 
  private:
-  /// @brief Condition variable that signals the completion of the first step.
-  condition_variable hasFirstEnded;
-  /// @brief Condition variable that signals the completion of the second step.
-  condition_variable hasSecondedEnded;
-  /// @brief Mutex used to protect the `hasFirstEnded` condition variable.
-  mutex mtxHasFirstEnded;
-  /// @brief Mutex used to protect the `hasSecondedEnded` condition variable.
-  mutex mtxHasSecondedEnded;
+  /// @brief An integer counter that indicates which step is currently active.
+  uint8_t turn;
+  /// @brief The condition variable used to block and unblock threads based on the `turn` counter.
+  condition_variable turnCV;
+  /// @brief The mutex used to protect the `turn` counter and the condition variable.
+  mutex turnMtx;
 };
